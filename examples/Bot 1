@@ -1,0 +1,124 @@
+import alpaca_trade_api as tradeapi
+
+# Set up Alpaca API keys
+API_KEY = 'your_api_key_here'
+API_SECRET = 'your_api_secret_here'
+BASE_URL = 'https://paper-api.alpaca.markets'  # For paper trading (simulation)
+
+api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
+import pandas as pd
+import alpaca_trade_api as tradeapi
+
+# Fetch stock data
+def get_stock_data(symbol, timeframe='1Min', limit=100):
+    barset = api.get_barset(symbol, timeframe, limit=limit)
+    data = barset[symbol]
+    df = pd.DataFrame({
+        'time': [bar.t for bar in data],
+        'open': [bar.o for bar in data],
+        'high': [bar.h for bar in data],
+        'low': [bar.l for bar in data],
+        'close': [bar.c for bar in data],
+        'volume': [bar.v for bar in data],
+    })
+    df.set_index('time', inplace=True)
+    return df
+
+# Example: Get 100 data points for AAPL
+symbol = 'AAPL'
+df = get_stock_data(symbol)
+print(df.tail())
+import numpy as np
+
+# Moving Average Crossover Strategy
+def moving_average_crossover(df, short_window=50, long_window=200):
+    df['short_mavg'] = df['close'].rolling(window=short_window, min_periods=1).mean()
+    df['long_mavg'] = df['close'].rolling(window=long_window, min_periods=1).mean()
+    
+    # Generate signals
+    df['signal'] = 0
+    df['signal'][short_window:] = np.where(df['short_mavg'][short_window:] > df['long_mavg'][short_window:], 1, 0)
+    df['position'] = df['signal'].diff()
+    
+    return df
+
+# Apply the strategy
+df = moving_average_crossover(df)
+print(df.tail())
+# Execute trade
+def execute_trade(symbol, action, quantity=1):
+    if action == 'buy':
+        api.submit_order(
+            symbol=symbol,
+            qty=quantity,
+            side='buy',
+            type='market',
+            time_in_force='gtc'
+        )
+    elif action == 'sell':
+        api.submit_order(
+            symbol=symbol,
+            qty=quantity,
+            side='sell',
+            type='market',
+            time_in_force='gtc'
+        )
+
+# Check signals and place orders
+def trade_logic(df, symbol, quantity=1):
+    if df['position'].iloc[-1] == 1:  # Buy signal
+        print(f"Buy Signal Detected for {symbol}")
+        execute_trade(symbol, 'buy', quantity)
+    elif df['position'].iloc[-1] == -1:  # Sell signal
+        print(f"Sell Signal Detected for {symbol}")
+        execute_trade(symbol, 'sell', quantity)
+
+# Example: Execute trades based on the latest signal
+trade_logic(df, symbol, quantity=1)
+import time
+
+# Main loop
+def main(symbol, short_window=50, long_window=200, quantity=1):
+    while True:
+        # Fetch latest stock data
+        df = get_stock_data(symbol, timeframe='1Min', limit=200)
+
+        # Apply moving average crossover strategy
+        df = moving_average_crossover(df, short_window, long_window)
+
+        # Execute trade logic based on the latest signal
+        trade_logic(df, symbol, quantity)
+        
+        # Sleep for 1 minute before fetching new data
+        time.sleep(60)
+
+# Start trading for AAPL
+main('AAPL')
+# Example of setting a stop-loss for a trade:
+def execute_trade_with_stop_loss(symbol, action, quantity=1, stop_loss_pct=0.02):
+    if action == 'buy':
+        order = api.submit_order(
+            symbol=symbol,
+            qty=quantity,
+            side='buy',
+            type='market',
+            time_in_force='gtc'
+        )
+        # Set stop-loss order
+        stop_loss_price = order.filled_avg_price * (1 - stop_loss_pct)
+        api.submit_order(
+            symbol=symbol,
+            qty=quantity,
+            side='sell',
+            type='stop_market',
+            stop_price=stop_loss_price,
+            time_in_force='gtc'
+        )
+    elif action == 'sell':
+        api.submit_order(
+            symbol=symbol,
+            qty=quantity,
+            side='sell',
+            type='market',
+            time_in_force='gtc'
+        )
