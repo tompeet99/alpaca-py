@@ -1,0 +1,176 @@
+import time
+import datetime
+import numpy as np
+import pandas as pd
+from alpaca_trade_api import REST, TimeFrame
+from sklearn.ensemble import RandomForestClassifier
+
+# -----------------------
+# Configuration
+# -----------------------
+API_KEY_ID = "AK21NR1T72A1R6Z5L597"
+API_SECRET_KEY = "jfZjrjgeCTBAVoIRnK4mT8dyonzDvBprzRz5TJbv"
+BASE_URL = "https://paper-api.alpaca.markets"  # Paper trading endpoint
+SYMBOL = "AAPL"  # Symbol to trade
+BAR_TIMEFRAME = TimeFrame.Minute
+WINDOW_SIZE = 20  # Number of past bars to consider for features
+TRAIN_INTERVAL = 60  # Retrain the model every 60 iterations (example)
+QUANTITY = 1       # Number of shares to trade per signal
+
+# Initialize API
+api = REST(API_KEY_ID, API_SECRET_KEY, base_url=BASE_URL)
+
+# -----------------------
+# Utility Functions
+# -----------------------
+
+def get_historical_data(symbol, limit=200):
+    """Fetch historical bar data for the symbol."""
+    end = pd.Timestamp.now(tz='America/New_York')
+    start = end - pd.Timedelta('2 days')  # get enough data for training
+    bars = api.get_bars(symbol, BAR_TIMEFRAME, start.isoformat(), end.isoformat(), limit=limit).df
+    bars = bars[bars['symbol'] == symbol]
+    bars = bars.sort_index()
+    return bars
+
+def generate_features(data):
+    """
+    Given a pandas DataFrame of historical bars with columns ['open','high','low','close','volume'],
+    generate features for the ML model.
+    """
+    # Example features:
+    #  - Past returns
+    #  - Simple rolling means
+    data['returns'] = data['close'].pct_change()
+    data['rolling_mean'] = data['close'].rolling(5).mean()
+    data['rolling_std'] = data['close'].rolling(5).std()
+    data['rolling_volume_mean'] = data['volume'].rolling(5).mean()
+    
+    # Drop NaNs
+    data = data.dropna()
+    return data
+
+def prepare_training_data(data, window_size=20):
+    """
+    Prepare X, y for training.
+    We predict whether the close price in the next bar is higher than current close.
+    """
+    # Shift the close forward by one to get the "future" close for the target.
+    data['future_close'] = data['close'].shift(-1)
+    data = data.dropna()
+    
+    # Target: 1 if future close > current close, else 0
+    data['target'] = (data['future_close'] > data['close']).astype(int)
+    
+    # Features: use the last `window_size` return values, rolling stats, etc.
+    # For simplicity, we'll just select the last known columns and flatten them.
+    # More sophisticated feature engineering is recommended.
+    feature_cols = ['open','high','low','close','volume','returns','rolling_mean','rolling_std','rolling_volume_mean']
+    
+    X, y = [], []
+    for i in range(window_size, len(data)):
+        X.append(data[feature_cols].iloc[i-window_size:i].values.flatten())
+        y.append(data['target'].iloc[i])
+    
+    return np.array(X), np.array(y)
+
+def place_order(symbol, qty, side):
+    """Place an order via Alpaca."""
+    try:
+        order = api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            type='market',
+            time_in_force='day'
+        )
+        print(f"Placed {side} order for {qty} shares of {symbol}.")
+        return order
+    except Exception as e:
+        print(f"Error placing order: {e}")
+        return None
+
+# -----------------------
+# Main Bot Logic
+# -----------------------
+if __name__ == "__main__":
+    # Initial data and model training
+    data = get_historical_data(SYMBOL, limit=1000)
+    data = generate_features(data)
+    X, y = prepare_training_data(data, window_size=WINDOW_SIZE)
+
+    if len(X) == 0:
+        print("Not enough data to train model. Exiting.")
+        exit()
+
+    model = RandomForestClassifier(n_estimators=50, random_state=42)
+    model.fit(X, y)
+    print("Initial model trained.")
+
+    iteration = 0
+    position = None  # Track if we are currently holding a position
+    while True:
+        try:
+            # Fetch latest data
+            new_data = get_historical_data(SYMBOL, limit=WINDOW_SIZE+5)
+            new_data = generate_features(new_data)
+            
+            # Prepare latest features for prediction
+            if len(new_data) < WINDOW_SIZE:
+                print("Not enough new data yet...")
+                time.sleep(60)
+                continue
+            
+            feature_cols = ['open','high','low','close','volume','returns','rolling_mean','rolling_std','rolling_volume_mean']
+            latest_window = new_data[feature_cols].iloc[-WINDOW_SIZE:]
+            if len(latest_window) < WINDOW_SIZE:
+                time.sleep(60)
+                continue
+            
+            X_live = latest_window.values.flatten().reshape(1, -1)
+            pred = model.predict(X_live)[0]
+            
+            # Prediction: 1 means future close might be higher, 0 means lower
+            # A simple logic: if predict higher, go long; if predict lower, go short
+            # This is extremely naive and just for demonstration!
+            if pred == 1 and position != "long":
+                # Close any short position first
+                if position == "short":
+                    # Buy back to close short (assuming we sold before)
+                    place_order(SYMBOL, QUANTITY, 'buy')
+                
+                # Go long
+                place_order(SYMBOL, QUANTITY, 'buy')
+                position = "long"
+            
+            elif pred == 0 and position != "short":
+                # Close any long position first
+                if position == "long":
+                    # Sell to close long
+                    place_order(SYMBOL, QUANTITY, 'sell')
+                
+                # Go short (For demonstration, we just place a sell order 
+                # assuming we can short. On Alpaca, you need margin and short locate, etc.)
+                place_order(SYMBOL, QUANTITY, 'sell')
+                position = "short"
+            
+            # After some iterations, retrain the model with updated historical data and past trades
+            iteration += 1
+            if iteration % TRAIN_INTERVAL == 0:
+                print("Retraining the model with latest data...")
+                data = get_historical_data(SYMBOL, limit=1000)
+                data = generate_features(data)
+                X, y = prepare_training_data(data, window_size=WINDOW_SIZE)
+                if len(X) > 0:
+                    model.fit(X, y)
+                    print("Model retrained.")
+            
+            # Sleep until the next bar
+            time.sleep(60)  # Wait for the next minute bar
+            
+        except KeyboardInterrupt:
+            print("Exiting...")
+            break
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+            time.sleep(60)
