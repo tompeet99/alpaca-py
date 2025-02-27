@@ -1,0 +1,100 @@
+import ccxt
+import time
+import pandas as pd
+
+# Configure your exchange with API keys (ensure these are secured!)
+exchange = ccxt.binance({
+    'apiKey': 'AK2C3G6GFRX81VYAJ44O',
+    'secret': '0MjkKZPUhXUXRpZbUKfBk7obSuIRTStor3UdeR7G',
+    'enableRateLimit': True,  # helps prevent hitting rate limits
+})
+
+def fetch_ohlcv(symbol, timeframe='1h', limit=100):
+    """
+    Fetch OHLCV data for the given symbol.
+    Returns a DataFrame with timestamp, open, high, low, close, and volume.
+    """
+    try:
+        data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        print(f"Error fetching data for {symbol}: {e}")
+        return None
+
+def compute_sma(df, window=20):
+    """
+    Compute the Simple Moving Average (SMA) for the 'close' prices.
+    """
+    df['sma'] = df['close'].rolling(window=window).mean()
+    return df
+
+def choose_coin(symbols):
+    """
+    Analyze a list of symbols to choose the one with the strongest upward signal.
+    This example picks coins where the latest closing price is above its SMA,
+    and selects the one with the highest relative difference.
+    """
+    best_symbol = None
+    best_score = -float('inf')
+    
+    for symbol in symbols:
+        df = fetch_ohlcv(symbol, '1h', 100)
+        if df is None or df.empty:
+            continue
+        
+        df = compute_sma(df, window=20)
+        
+        # Ensure there are enough data points to calculate the SMA
+        if pd.isna(df['sma'].iloc[-1]):
+            continue
+        
+        last_close = df['close'].iloc[-1]
+        last_sma = df['sma'].iloc[-1]
+        
+        # Only consider coins where the price is above the SMA
+        if last_close > last_sma:
+            score = (last_close - last_sma) / last_sma
+            print(f"{symbol}: Price={last_close:.2f}, SMA={last_sma:.2f}, Score={score:.4f}")
+            if score > best_score:
+                best_score = score
+                best_symbol = symbol
+                
+    return best_symbol
+
+def execute_trade(symbol, amount):
+    """
+    Execute a market buy order for the given symbol and amount.
+    """
+    try:
+        order = exchange.create_market_buy_order(symbol, amount)
+        print(f"Placed market buy order for {amount} of {symbol}")
+        return order
+    except Exception as e:
+        print(f"Error executing trade for {symbol}: {e}")
+        return None
+
+def main():
+    # Define the list of symbols to analyze; extend this list as needed.
+    symbols = ['BTC/USDT', 'ETH/USDT', 'XRP/USDT']
+    
+    chosen_symbol = choose_coin(symbols)
+    if chosen_symbol:
+        print(f"\nChosen symbol based on strategy: {chosen_symbol}")
+        
+        # Define the purchase amount (this should be determined by your risk management rules)
+        # Example: For BTC, buy 0.001 BTC; adjust for other coins accordingly.
+        if chosen_symbol == 'BTC/USDT':
+            amount = 0.001
+        elif chosen_symbol == 'ETH/USDT':
+            amount = 0.01
+        else:
+            amount = 10  # For coins like XRP, you might use a different sizing
+        
+        execute_trade(chosen_symbol, amount)
+    else:
+        print("No suitable coin found based on the current market data.")
+
+if __name__ == "__main__":
+    main()
