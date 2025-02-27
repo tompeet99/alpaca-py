@@ -1,0 +1,56 @@
+import ccxt
+import time
+
+# --- Configuration ---
+exchange = ccxt.binance({
+    'apiKey': 'AK2C3G6GFRX81VYAJ44O',       # Replace with your exchange API key
+    'secret': '0MjkKZPUhXUXRpZbUKfBk7obSuIRTStor3UdeR7G',    # Replace with your exchange secret key
+    'enableRateLimit': True,
+})
+
+symbol = 'BTC/USDT'  # The trading pair
+order_size = 0.001   # Amount of BTC to buy/sell per order
+
+# Price thresholds for triggering orders
+buy_threshold = 30000   # If price goes below this, buy
+sell_threshold = 35000  # If price goes above this, sell
+
+def get_current_price():
+    """Fetch the latest price for the trading pair."""
+    ticker = exchange.fetch_ticker(symbol)
+    return ticker['last']
+
+def place_order(order_type, amount):
+    """Place a market order (buy or sell)."""
+    if order_type == 'buy':
+        order = exchange.create_market_buy_order(symbol, amount)
+    elif order_type == 'sell':
+        order = exchange.create_market_sell_order(symbol, amount)
+    else:
+        raise ValueError("Order type must be 'buy' or 'sell'")
+    return order
+
+# --- Main Loop ---
+while True:
+    try:
+        current_price = get_current_price()
+        print(f"Current price of {symbol}: {current_price}")
+
+        if current_price < buy_threshold:
+            print("Price below threshold. Executing buy order...")
+            order = place_order('buy', order_size)
+            print("Buy order executed:", order)
+
+        elif current_price > sell_threshold:
+            print("Price above threshold. Executing sell order...")
+            order = place_order('sell', order_size)
+            print("Sell order executed:", order)
+
+        else:
+            print("Price within hold range. No action taken.")
+
+    except Exception as e:
+        print("Error:", e)
+
+    # Wait for 60 seconds before checking again
+    time.sleep(60)
